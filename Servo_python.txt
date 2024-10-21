@@ -1,0 +1,79 @@
+import cv2
+import mediapipe as mp
+import serial
+import time
+
+# Initialize MediaPipe Hands model
+mp_hands = mp.solutions.hands
+hands = mp_hands.Hands(min_detection_confidence=0.5, min_tracking_confidence=0.5)
+mp_draw = mp.solutions.drawing_utils
+
+# Setup serial connection (adjust 'COM8' to your Arduino's port)
+arduino = serial.Serial('COM8', 9600, timeout=1)
+time.sleep(1)  # Give the connection a second to settle
+
+# Initialize the webcam
+cap = cv2.VideoCapture(1)
+
+def is_hand_closed(hand_landmarks):
+    # Calculate the average distance of finger tips from the wrist (considered as palm base)
+    wrist = hand_landmarks.landmark[mp_hands.HandLandmark.WRIST]
+    finger_tips = [
+        hand_landmarks.landmark[mp_hands.HandLandmark.THUMB_TIP],
+        hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_TIP],
+        hand_landmarks.landmark[mp_hands.HandLandmark.MIDDLE_FINGER_TIP],
+        hand_landmarks.landmark[mp_hands.HandLandmark.RING_FINGER_TIP],
+        hand_landmarks.landmark[mp_hands.HandLandmark.PINKY_TIP],
+    ]
+    
+    distances = [
+        ((tip.x - wrist.x) ** 2 + (tip.y - wrist.y) ** 2) ** 0.5 for tip in finger_tips
+    ]
+    
+    average_distance = sum(distances) / len(distances)
+    
+    # A smaller average distance indicates a closed hand; adjust threshold based on testing
+    return average_distance < 0.1
+
+while cap.isOpened():
+    ret, frame = cap.read()
+    if not ret:
+        break
+    frame = cv2.flip(frame, 1)  # Mirror the frame
+    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    results = hands.process(rgb_frame)
+    
+    motor_command_sent = False  # Track if a command was sent
+
+    if results.multi_hand_landmarks:
+        for hand_landmarks, handedness in zip(results.multi_hand_landmarks, results.multi_handedness):
+            # Draw hand landmarks
+            mp_draw.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
+            
+            label = handedness.classification[0].label
+            if label == 'Right':
+                if is_hand_closed(hand_landmarks):
+                    arduino.write(b'S')  # Stop the motor if right hand is closed
+                    text = 'Motor Stopped'
+                    motor_command_sent = True
+                else:
+                    arduino.write(b'R')  # Rotate motor CW
+                    text = 'Motor Moving Clockwise'
+                    motor_command_sent = True
+            elif label == 'Left':
+                arduino.write(b'L')  # Rotate motor CCW
+                text = 'Motor Moving Counterclockwise'
+                motor_command_sent = True
+            
+            cv2.putText(frame, text, (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2, cv2.LINE_AA)
+            break  # Process only the first detected hand
+
+    
+    
+    cv2.imshow('Hand Detection', frame)
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+cap.release()
+cv2.destroyAllWindows()
+arduino.close()  # Close the serial connectionq
